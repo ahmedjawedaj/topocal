@@ -393,7 +393,14 @@ def test_huge_finite_matrix_with_offdiagonal_mass_is_kept_valid(tmp_path: Path) 
     assert np.array_equal(model._precision, model._precision.T)
     assert np.linalg.eigvalsh(model._precision / 1e308)[0] >= 0.0
     assert model.support_score(fv(0.0, 0.0)) == pytest.approx(1.0)
-    assert model.support_score(fv(3.0, -4.0)) == 0.0
+    # BLAS implementations can produce +inf or NaN when overflowing intermediate
+    # products cancel. Either zero support or explicit failure is conservative.
+    try:
+        score = model.support_score(fv(3.0, -4.0))
+    except ValueError as exc:
+        assert "indeterminate distance" in str(exc)
+    else:
+        assert score == 0.0
 
 
 def test_huge_scale_tiny_negative_eigenvalue_is_projected(tmp_path: Path) -> None:
