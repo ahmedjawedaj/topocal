@@ -36,7 +36,7 @@ class GaussianSupportModel:
         if self.temperature <= 0:
             raise ValueError("temperature must be positive")
 
-    def fit(self, features: list[FeatureVector]) -> "GaussianSupportModel":
+    def fit(self, features: list[FeatureVector]) -> GaussianSupportModel:
         if len(features) < 2:
             raise ValueError("at least two calibration samples are required")
         names = features[0].names
@@ -90,7 +90,7 @@ class GaussianSupportModel:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "GaussianSupportModel":
+    def load(cls, path: str | Path) -> GaussianSupportModel:
         """Load and validate a versioned NPZ artifact."""
 
         with np.load(Path(path), allow_pickle=False) as artifact:
@@ -140,7 +140,7 @@ def support_threshold_from_calibration(
     values = np.asarray(scores, dtype=np.float64)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("scores must be a non-empty one-dimensional array")
-    if not np.all(np.isfinite(values)) or not np.all((0.0 <= values) & (values <= 1.0)):
+    if not np.all(np.isfinite(values)) or not np.all((values >= 0.0) & (values <= 1.0)):
         raise ValueError("support scores must be finite values in [0, 1]")
     if not 0.0 <= lower_quantile <= 1.0:
         raise ValueError("lower_quantile must be in [0, 1]")

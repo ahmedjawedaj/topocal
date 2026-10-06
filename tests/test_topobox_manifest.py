@@ -4,7 +4,6 @@ import pytest
 
 from topocal.datasets.topobox import TopoBoxManifest
 
-
 CSV = """geometry_id,protocol,split,is_ood,beta1,beta2,geometry_family,seed
 PB_train_0000_b00,B,train,false,0,0,B,1
 PB_train_0001_b10,B,train,false,1,0,B,2

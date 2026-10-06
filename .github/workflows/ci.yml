@@ -28,6 +28,6 @@ jobs:
       - name: Type check
         run: mypy src/topocal
       - name: Test
-        run: pytest --cov=topocal --cov-report=term-missing --cov-fail-under=85
+        run: pytest --cov=topocal --cov-report=term-missing --cov-fail-under=90
       - name: Smoke test CLI
         run: topocal demo
