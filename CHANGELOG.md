@@ -11,6 +11,9 @@
 - support artifacts are validated on load and save: finite positive `regularization` and `temperature`, valid feature names and dimensions, finite state, and a symmetric positive semidefinite precision (NumPy-only, scale-aware `1e-8` tolerance)
 - a negative precision no longer clamps distance to zero and grants an outlier support 1.0, and a corrupted in-memory model now raises so the router falls back
 - `load_calibration_bundle` rejects an invalid support artifact even when its hash matches the manifest
+- support validation is overflow-safe: a negative precision with a query that overflows the distance now raises and falls back instead of scoring 1.0, and a huge finite precision such as `1e308` stays finite instead of loading as infinity
+- `temperature` and `regularization` are revalidated at `fit`, `support_score` and `save`, so mutating them to `inf`, `nan`, zero, a negative, a string or a boolean can no longer grant outliers maximum support or write an artifact the loader rejects. Strings and booleans are no longer coerced in the constructor either
+- fitting raises `ValueError` when calibration features overflow float64 in the covariance
 - `TopoBoxManifest.from_csv` loads the real upstream header (no `seed` column). `TopoBoxGeometryRecord.seed` is `int | None`, `None` when the column is absent or the cell is blank, and a malformed supplied seed raises `ValueError`. Seeds are never defaulted to 0
 - short manifest rows raise `ValueError` instead of `AttributeError`
 - the source distribution now includes `tests/conftest.py`, `tests/topobox_fixture.py`, the whole test tree and the public docs via `MANIFEST.in`, and excludes data, runs, caches, checkpoints and local-only guides

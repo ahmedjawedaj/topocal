@@ -216,3 +216,59 @@ def test_router_real_support_outside_support_leaves_risk_unknown() -> None:
     assert result.decision == Decision.FALLBACK_SOLVER
     assert result.support_status == SupportStatus.OUTSIDE_SUPPORT
     assert result.risk is None
+
+
+@dataclass
+class ValueSurrogate:
+    value: float
+
+    def predict(self, problem: Problem) -> PredictionBundle:
+        return PredictionBundle(np.array([1.0]), FeatureVector(np.array([self.value]), NAMES))
+
+
+def test_router_falls_back_when_negative_precision_overflows_distance() -> None:
+    """Regression: a negative precision and a 1e200 query used to give support 1.0 and accept."""
+
+    support = real_support()
+    support._precision = np.array([[-1.0]])
+    instance = router(risk=0.01)
+    instance.support_model = support
+    instance.surrogate = ValueSurrogate(1e200)
+    result = instance.solve(Problem("overflow", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.UNAVAILABLE
+    assert result.risk is None
+
+
+def test_router_valid_model_with_extreme_query_is_outside_support() -> None:
+    instance = router(risk=0.01)
+    instance.support_model = real_support()
+    instance.surrogate = ValueSurrogate(1e200)
+    result = instance.solve(Problem("extreme", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.OUTSIDE_SUPPORT
+    assert result.risk is None
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 0.0, -2.0])
+def test_router_falls_back_when_temperature_is_mutated_invalid(bad: float) -> None:
+    """Regression: temperature=inf gave every outlier support 1.0 and accepted the output."""
+
+    support = real_support()
+    support.temperature = bad
+    instance = router(risk=0.01)
+    instance.support_model = support
+    instance.surrogate = ValueSurrogate(1000.0)
+    result = instance.solve(Problem("mutated", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.UNAVAILABLE
+    assert result.risk is None
+
+
+def test_router_accepts_after_valid_temperature_change() -> None:
+    support = real_support()
+    support.temperature = 2.0
+    instance = router(risk=0.01)
+    instance.support_model = support
+    instance.surrogate = ValueSurrogate(0.0)
+    assert instance.solve(Problem("ok", None)).decision == Decision.ACCEPT_NEURAL

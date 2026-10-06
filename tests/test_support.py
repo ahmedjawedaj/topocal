@@ -325,3 +325,225 @@ def test_save_refuses_corrupted_in_memory_state(tmp_path: Path) -> None:
 def test_private_state_is_not_constructor_argument() -> None:
     with pytest.raises(TypeError):
         GaussianSupportModel(_precision=-np.eye(1))  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Overflow robustness and mutable hyperparameters (review items R1 and R2)
+# ---------------------------------------------------------------------------
+
+
+def one_feature_model() -> GaussianSupportModel:
+    vectors = [FeatureVector(np.array([x]), ("x",)) for x in (-1.0, -0.5, 0.0, 0.5, 1.0)]
+    return GaussianSupportModel().fit(vectors)
+
+
+def xq(value: float) -> FeatureVector:
+    return FeatureVector(np.array([value]), ("x",))
+
+
+@pytest.mark.parametrize("query", [1e200, 1e154, 1e10])
+@pytest.mark.parametrize("precision", [-1.0, -1e300])
+def test_negative_precision_cannot_hide_behind_distance_overflow(
+    query: float, precision: float
+) -> None:
+    """Regression: distance -inf and magnitude inf made `-inf < -inf` false, giving support 1."""
+
+    model = one_feature_model()
+    model._precision = np.array([[precision]])
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        model.support_score(xq(query))
+
+
+@pytest.mark.parametrize("query", [1e200, 1e154, 1e10, -1e308])
+def test_valid_precision_with_extreme_query_never_gains_support(query: float) -> None:
+    model = one_feature_model()
+    score = model.support_score(xq(query))
+    assert score == 0.0
+    assert score < model.support_score(xq(0.5))
+
+
+def test_extreme_query_difference_overflow_never_gains_support(tmp_path: Path) -> None:
+    path = write_artifact(tmp_path / "far.npz", mean=(-1e308,), precision=((1.0,),))
+    model = GaussianSupportModel.load(path)
+    assert model.support_score(xq(1e308)) == 0.0
+
+
+def test_huge_finite_precision_is_kept_finite_and_valid(tmp_path: Path) -> None:
+    """Regression: 0.5 * (P + P.T) overflowed, so loading produced an infinite matrix."""
+
+    path = write_artifact(tmp_path / "huge.npz", precision=((1e308,),))
+    model = GaussianSupportModel.load(path)
+    assert model._precision is not None
+    assert np.all(np.isfinite(model._precision))
+    assert model.support_score(xq(0.0)) == pytest.approx(1.0)
+    assert model.support_score(xq(1.0)) == 0.0
+    assert model.support_score(xq(1e10)) == 0.0
+
+
+def test_huge_finite_matrix_with_offdiagonal_mass_is_kept_valid(tmp_path: Path) -> None:
+    path = write_artifact(
+        tmp_path / "huge2.npz",
+        mean=(0.0, 0.0),
+        precision=((1e308, 5e307), (5e307, 1e308)),
+        names=("a", "b"),
+    )
+    model = GaussianSupportModel.load(path)
+    assert model._precision is not None
+    assert np.all(np.isfinite(model._precision))
+    assert np.array_equal(model._precision, model._precision.T)
+    assert np.linalg.eigvalsh(model._precision / 1e308)[0] >= 0.0
+    assert model.support_score(fv(0.0, 0.0)) == pytest.approx(1.0)
+    assert model.support_score(fv(3.0, -4.0)) == 0.0
+
+
+def test_huge_scale_tiny_negative_eigenvalue_is_projected(tmp_path: Path) -> None:
+    path = write_artifact(
+        tmp_path / "huge3.npz",
+        mean=(0.0, 0.0),
+        precision=((1e308, 0.0), (0.0, -1e299)),
+        names=("a", "b"),
+    )
+    model = GaussianSupportModel.load(path)
+    assert model._precision is not None
+    assert np.all(np.isfinite(model._precision))
+    assert model._precision[1, 1] >= 0.0
+
+
+def test_huge_scale_material_negative_eigenvalue_is_rejected(tmp_path: Path) -> None:
+    path = write_artifact(
+        tmp_path / "huge4.npz",
+        mean=(0.0, 0.0),
+        precision=((1e308, 0.0), (0.0, -1e301)),
+        names=("a", "b"),
+    )
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        GaussianSupportModel.load(path)
+
+
+def test_huge_scale_asymmetry_is_rejected(tmp_path: Path) -> None:
+    path = write_artifact(
+        tmp_path / "huge5.npz",
+        mean=(0.0, 0.0),
+        precision=((1e308, 1e308), (-1e308, 1e308)),
+        names=("a", "b"),
+    )
+    with pytest.raises(ValueError, match="symmetric"):
+        GaussianSupportModel.load(path)
+
+
+def test_fit_rejects_overflowing_calibration_features() -> None:
+    vectors = [fv(-1e200, 0.0), fv(1e200, 1.0), fv(0.0, 2.0)]
+    with pytest.raises(ValueError, match="overflow|finite"):
+        GaussianSupportModel().fit(vectors)
+
+
+# R2: hyperparameters are public and mutable, so they are revalidated at use boundaries.
+
+BAD_HYPERPARAMETERS = [float("inf"), float("-inf"), float("nan"), 0.0, -1.0, "abc", None, True]
+
+
+@pytest.mark.parametrize("bad", BAD_HYPERPARAMETERS)
+def test_invalid_temperature_after_construction_cannot_grant_support(bad: object) -> None:
+    model = fitted_model()
+    model.temperature = bad  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="temperature"):
+        model.support_score(fv(1000.0, 1000.0))
+
+
+@pytest.mark.parametrize("bad", BAD_HYPERPARAMETERS)
+def test_invalid_regularization_after_construction_rejected_by_fit(bad: object) -> None:
+    model = GaussianSupportModel()
+    model.regularization = bad  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="regularization"):
+        model.fit([fv(-1, 0), fv(0, -1), fv(1, 0), fv(0, 1)])
+
+
+@pytest.mark.parametrize("field_name", ["temperature", "regularization"])
+@pytest.mark.parametrize("bad", BAD_HYPERPARAMETERS)
+def test_save_rejects_invalid_current_hyperparameters_without_touching_artifact(
+    tmp_path: Path, field_name: str, bad: object
+) -> None:
+    model = fitted_model()
+    path = tmp_path / "support.npz"
+    model.save(path)
+    original = path.read_bytes()
+    setattr(model, field_name, bad)
+    with pytest.raises(ValueError, match=field_name):
+        model.save(path)
+    assert path.read_bytes() == original
+    fresh = tmp_path / "never.npz"
+    with pytest.raises(ValueError, match=field_name):
+        model.save(fresh)
+    assert not fresh.exists()
+    GaussianSupportModel.load(path)
+
+
+def test_valid_hyperparameter_mutation_is_supported_and_roundtrips(tmp_path: Path) -> None:
+    model = fitted_model()
+    query = fv(1.0, 1.0)
+    d2 = model.squared_distance(query)
+    model.temperature = 4.0
+    assert model.support_score(query) == pytest.approx(np.exp(-0.5 * d2 / 4.0))
+    model.temperature = 8
+    assert model.support_score(query) == pytest.approx(np.exp(-0.5 * d2 / 8.0))
+    model.save(tmp_path / "m.npz")
+    restored = GaussianSupportModel.load(tmp_path / "m.npz")
+    assert restored.temperature == 8.0
+    assert restored.support_score(query) == pytest.approx(model.support_score(query))
+    model.regularization = 1e-3
+    model.fit([fv(-1, 0), fv(0, -1), fv(1, 0), fv(0, 1), fv(0, 0)])
+    assert 0.0 < model.support_score(query) <= 1.0
+
+
+@pytest.mark.parametrize("bad", ["2.0", True, False, b"2"])
+def test_hyperparameters_must_be_real_numbers(bad: object) -> None:
+    with pytest.raises(ValueError, match="temperature"):
+        GaussianSupportModel(temperature=bad)  # type: ignore[arg-type]
+
+
+def test_nan_mean_in_memory_raises_instead_of_scoring() -> None:
+    model = one_feature_model()
+    model._mean = np.array([np.nan])
+    with pytest.raises(ValueError, match="indeterminate"):
+        model.support_score(xq(0.0))
+
+
+def test_artifact_metadata_must_be_a_json_object(tmp_path: Path) -> None:
+    np.savez_compressed(
+        tmp_path / "list.npz", mean=np.zeros(1), precision=np.eye(1), metadata="[1, 2]"
+    )
+    with pytest.raises(ValueError, match="JSON object"):
+        GaussianSupportModel.load(tmp_path / "list.npz")
+
+
+def test_unusable_eigendecomposition_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_eigh(matrix: object) -> tuple[np.ndarray, np.ndarray]:
+        return np.array([np.nan, 1.0]), np.eye(2)
+
+    monkeypatch.setattr(np.linalg, "eigh", broken_eigh)
+    path = write_artifact(
+        tmp_path / "eigh.npz", mean=(0.0, 0.0), precision=np.eye(2), names=("a", "b")
+    )
+    with pytest.raises(ValueError, match="eigendecomposition"):
+        GaussianSupportModel.load(path)
+
+
+def test_projection_that_would_overflow_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defensive branch: a projected matrix is rescaled, and the result must still be finite."""
+
+    def inflating_eigh(matrix: object) -> tuple[np.ndarray, np.ndarray]:
+        return np.array([-1e-9, 1.0]), 2.0 * np.eye(2)
+
+    monkeypatch.setattr(np.linalg, "eigh", inflating_eigh)
+    path = write_artifact(
+        tmp_path / "inflate.npz",
+        mean=(0.0, 0.0),
+        precision=((1e308, 0.0), (0.0, 1e300)),
+        names=("a", "b"),
+    )
+    with pytest.raises(ValueError, match="overflows"):
+        GaussianSupportModel.load(path)

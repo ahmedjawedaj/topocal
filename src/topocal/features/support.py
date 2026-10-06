@@ -31,10 +31,15 @@ _STATE_RTOL = 1e-8
 
 
 def _positive_finite(name: str, value: object) -> float:
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise ValueError(f"{name} must be a finite positive number, got {value!r}") from None
+    """Return ``value`` as a finite positive float, or raise ``ValueError``.
+
+    Only real numbers qualify. Strings, bytes and booleans are rejected rather than coerced, so
+    a mutated public field cannot slip through ``float()``.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int | float | np.integer | np.floating):
+        raise ValueError(f"{name} must be a finite positive number, got {value!r}")
+    number = float(value)
     if not math.isfinite(number) or number <= 0.0:
         raise ValueError(f"{name} must be a finite positive number, got {value!r}")
     return number
@@ -52,7 +57,13 @@ def _validate_names(names: tuple[str, ...], size: int) -> None:
 
 
 def _validated_precision(precision: Array, mean: Array) -> Array:
-    """Return an exactly symmetric PSD precision matrix, or raise ``ValueError``."""
+    """Return an exactly symmetric PSD precision matrix, or raise ``ValueError``.
+
+    All comparisons run on the matrix divided by its largest absolute entry, so entries near the
+    float64 maximum cannot overflow ``P - P.T``, ``P + P.T`` or the eigensolver. The returned
+    matrix is built from the original entries wherever no projection is needed. Every computed
+    quantity is checked for finiteness before it is trusted.
+    """
 
     if mean.ndim != 1 or mean.size == 0 or precision.shape != (mean.size, mean.size):
         raise ValueError("invalid support artifact dimensions")
@@ -63,16 +74,25 @@ def _validated_precision(precision: Array, mean: Array) -> Array:
         raise ValueError(
             "precision matrix is all zeros, so every query would receive maximum support"
         )
-    if float(np.max(np.abs(precision - precision.T))) > _STATE_RTOL * scale:
+    unit = precision / scale  # every entry has magnitude at most 1
+    if float(np.max(np.abs(unit - unit.T))) > _STATE_RTOL:
         raise ValueError("precision matrix is not symmetric")
-    symmetric = 0.5 * (precision + precision.T)
-    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    # Halving before adding keeps each term at most scale / 2, so the sum cannot overflow.
+    symmetric = 0.5 * precision + 0.5 * precision.T
+    unit_symmetric = 0.5 * unit + 0.5 * unit.T
+    eigenvalues, eigenvectors = np.linalg.eigh(unit_symmetric)
+    if not np.all(np.isfinite(eigenvalues)) or not np.all(np.isfinite(eigenvectors)):
+        raise ValueError("precision matrix has no usable eigendecomposition")
     if float(eigenvalues[0]) < -_STATE_RTOL * float(eigenvalues[-1]) or eigenvalues[-1] <= 0.0:
         raise ValueError("precision matrix is not positive semidefinite")
     if eigenvalues[0] < 0.0:
         clipped = np.clip(eigenvalues, 0.0, None)
-        symmetric = (eigenvectors * clipped) @ eigenvectors.T
-        symmetric = 0.5 * (symmetric + symmetric.T)
+        unit_projected = (eigenvectors * clipped) @ eigenvectors.T
+        unit_projected = 0.5 * unit_projected + 0.5 * unit_projected.T
+        with np.errstate(over="ignore"):
+            symmetric = unit_projected * scale
+        if not np.all(np.isfinite(symmetric)):
+            raise ValueError("projected precision matrix overflows float64")
     return np.asarray(symmetric, dtype=np.float64)
 
 
@@ -96,16 +116,22 @@ class GaussianSupportModel:
         self.temperature = _positive_finite("temperature", self.temperature)
 
     def fit(self, features: list[FeatureVector]) -> GaussianSupportModel:
+        regularization = _positive_finite("regularization", self.regularization)
+        _positive_finite("temperature", self.temperature)
         if len(features) < 2:
             raise ValueError("at least two calibration samples are required")
         names = features[0].names
         if any(item.names != names for item in features):
             raise ValueError("all feature vectors must have the same names and order")
         x = np.stack([item.values for item in features], axis=0)
-        mean = x.mean(axis=0)
-        centered = x - mean
-        cov = (centered.T @ centered) / max(len(features) - 1, 1)
-        cov = cov + self.regularization * np.eye(cov.shape[0])
+        # Overflow is detected and reported explicitly below, so NumPy's warning is redundant.
+        with np.errstate(over="ignore", invalid="ignore"):
+            mean = x.mean(axis=0)
+            centered = x - mean
+            cov = (centered.T @ centered) / max(len(features) - 1, 1)
+        cov = cov + regularization * np.eye(cov.shape[0])
+        if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(cov)):
+            raise ValueError("calibration features overflow float64 when estimating covariance")
         precision = _validated_precision(np.linalg.pinv(cov), mean)
         self._mean = mean
         self._precision = precision
@@ -116,18 +142,30 @@ class GaussianSupportModel:
         self._ensure_fitted(features)
         assert self._mean is not None
         assert self._precision is not None
-        delta = features.values - self._mean
-        distance = float(delta @ self._precision @ delta)
-        magnitude = float(np.abs(delta) @ np.abs(self._precision) @ np.abs(delta))
-        if math.isnan(distance) or distance < -_STATE_RTOL * magnitude:
-            # A valid PSD state cannot produce this. Raising lets the router fail closed instead
-            # of clamping a corrupted negative distance to maximum support.
+        # Overflow and indeterminate results are classified explicitly below, not warned about.
+        with np.errstate(over="ignore", invalid="ignore"):
+            delta = features.values - self._mean
+            distance = float(delta @ self._precision @ delta)
+            magnitude = float(np.abs(delta) @ np.abs(self._precision) @ np.abs(delta))
+        if math.isnan(distance):
+            raise ValueError("support model state produced an indeterminate distance")
+        if distance < 0.0 and not (
+            # Only roundoff-sized negatives are tolerated. Infinite or unmeasurable magnitudes
+            # cannot certify roundoff, so -inf (negative overflow) always raises. A valid PSD
+            # state never produces a negative distance, and clamping a corrupted one to zero
+            # would grant maximum support. Positive overflow returns +inf, which maps to zero
+            # support, so overflow can only lower support.
+            math.isfinite(distance)
+            and math.isfinite(magnitude)
+            and distance >= -_STATE_RTOL * magnitude
+        ):
             raise ValueError("support model state is not positive semidefinite")
         return max(distance, 0.0)
 
     def support_score(self, features: FeatureVector) -> float:
+        temperature = _positive_finite("temperature", self.temperature)
         d2 = self.squared_distance(features)
-        return float(np.exp(-0.5 * d2 / self.temperature))
+        return float(np.exp(-0.5 * d2 / temperature))
 
     def save(self, path: str | Path) -> None:
         """Serialize fitted state as a versioned, pickle-free NPZ artifact."""
@@ -136,6 +174,8 @@ class GaussianSupportModel:
         assert self._mean is not None
         assert self._precision is not None
         assert self._names is not None
+        regularization = _positive_finite("regularization", self.regularization)
+        temperature = _positive_finite("temperature", self.temperature)
         _validated_precision(self._precision, self._mean)
         _validate_names(self._names, self._mean.size)
         destination = Path(path)
@@ -144,8 +184,8 @@ class GaussianSupportModel:
             {
                 "artifact_version": _SUPPORT_ARTIFACT_VERSION,
                 "model_type": type(self).__name__,
-                "regularization": self.regularization,
-                "temperature": self.temperature,
+                "regularization": regularization,
+                "temperature": temperature,
                 "feature_names": list(self._names),
             },
             sort_keys=True,
