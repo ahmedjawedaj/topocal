@@ -17,6 +17,25 @@ class ExperimentPartition(StrEnum):
     OOD_DEV = "ood_dev"
     OOD_TEST = "ood_test"
 
+    @classmethod
+    def parse(cls, value: object) -> ExperimentPartition:
+        """Normalize an enum member or its exact string value, rejecting anything else.
+
+        This is the single normalization point for partition input. Every guard must run on the
+        result, because ``StrEnum`` members compare equal to their strings and a guard based on
+        identity would silently miss ``"ood_test"``.
+        """
+
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value)
+            except ValueError:
+                pass
+        allowed = [member.value for member in cls]
+        raise ValueError(f"unknown experiment partition {value!r}, expected one of {allowed}")
+
 
 @dataclass(frozen=True, slots=True)
 class SplitManifest:
@@ -67,15 +86,22 @@ class SplitManifest:
 
     def ids_for(
         self,
-        partition: ExperimentPartition,
+        partition: ExperimentPartition | str,
         *,
         allow_final_test: bool = False,
     ) -> tuple[str, ...]:
-        """Return IDs for a partition, guarding final OOD test by default."""
+        """Return IDs for a partition, guarding final OOD test by default.
 
-        if partition is ExperimentPartition.OOD_TEST and not allow_final_test:
+        ``partition`` may be an :class:`ExperimentPartition` or its exact string value, for
+        example ``"train"``. Both forms are normalized before the guard runs. Any other value
+        raises ``ValueError``. The final test unlocks only when ``allow_final_test`` is the
+        boolean ``True``, so truthy look-alikes such as ``"false"`` or ``1`` stay locked.
+        """
+
+        normalized = ExperimentPartition.parse(partition)
+        if normalized is ExperimentPartition.OOD_TEST and allow_final_test is not True:
             raise PermissionError(
-                "final OOD test access is locked; pass allow_final_test=True "
+                "final OOD test access is locked, pass allow_final_test=True "
                 "only for frozen reporting"
             )
         return {
@@ -83,7 +109,7 @@ class SplitManifest:
             ExperimentPartition.CALIBRATION: self.calibration_ids,
             ExperimentPartition.OOD_DEV: self.ood_dev_ids,
             ExperimentPartition.OOD_TEST: self.ood_test_ids,
-        }[partition]
+        }[normalized]
 
     def write_json(self, path: str | Path) -> None:
         destination = Path(path)

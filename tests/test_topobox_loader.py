@@ -469,3 +469,49 @@ def test_sha256sums_parsing_and_ambiguity(tmp_path: Path) -> None:
     path.write_text("not a checksum line\n", encoding="utf-8")
     with pytest.raises(ValueError, match="malformed checksum line 1"):
         Sha256Sums.from_file(path)
+
+
+@pytest.mark.parametrize("partition", [ExperimentPartition.OOD_TEST, "ood_test"])
+def test_final_test_is_blocked_before_any_file_opens(
+    topobox_tree: FixtureTree, monkeypatch: pytest.MonkeyPatch, partition: Any
+) -> None:
+    opened: list[object] = []
+
+    def spy(*args: Any, **kwargs: Any) -> None:
+        opened.append(args)
+        raise AssertionError("no HDF5 file may open before the guard")
+
+    monkeypatch.setattr(h5py, "File", spy)
+    with pytest.raises(PermissionError, match="locked"):
+        make_dataset(topobox_tree, partition)
+    with pytest.raises(PermissionError, match="locked"):
+        make_dataset(topobox_tree, partition, allow_final_test="yes")  # type: ignore[arg-type]
+    assert opened == []
+
+
+def test_string_partitions_are_normalized_for_ordinary_use(topobox_tree: FixtureTree) -> None:
+    dataset = make_dataset(topobox_tree, "train")
+    assert dataset.partition is ExperimentPartition.TRAIN
+    assert dataset.ids == (TRAIN_A, TRAIN_B)
+    dataset.load_geometry(TRAIN_A)
+    assert dataset.provenance().partition == "train"
+    assert make_dataset(topobox_tree, "calibration").ids == ("PB_validation_0000_b00",)
+    assert make_dataset(topobox_tree, "ood_dev").ids == ("PB_test_ood_0000_b30",)
+
+
+def test_explicit_final_opt_in_with_string_input_on_synthetic_data(
+    topobox_tree: FixtureTree,
+) -> None:
+    dataset = make_dataset(topobox_tree, "ood_test", allow_final_test=True)
+    assert dataset.partition is ExperimentPartition.OOD_TEST
+    assert dataset.ids == ("PC_test_ood_0000_b03",)
+    assert dataset.load_geometry("PC_test_ood_0000_b03").protocol == "C"
+    assert dataset.provenance().partition == "ood_test"
+
+
+@pytest.mark.parametrize("partition", ["final", "OOD_TEST", None, 7])
+def test_invalid_dataset_partitions_raise_value_error(
+    topobox_tree: FixtureTree, partition: Any
+) -> None:
+    with pytest.raises(ValueError, match="unknown experiment partition"):
+        make_dataset(topobox_tree, partition)
