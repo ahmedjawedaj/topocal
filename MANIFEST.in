@@ -1,0 +1,23 @@
+# Source distribution contents. setuptools already includes pyproject.toml, the package under
+# src/ and the files named by license-files. Everything else is listed on purpose so that the
+# archive can run its own tests, and so that local-only files never leak into it.
+
+include LICENSE README.md CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md
+include CITATION.cff Makefile
+
+# Complete test support tree (conftest.py and topobox_fixture.py are imported by tests).
+recursive-include tests *.py
+
+# Public contributor and research documentation only. Internal guides, handoffs and plans are
+# local-only and Git-ignored, so docs/ is never grafted wholesale.
+include docs/ARCHITECTURE.md docs/DEVELOPMENT.md docs/EXPERIMENT_PROTOCOL.md
+include docs/LITERATURE_MAP.md docs/RESEARCH_PLAN.md
+graft docs/adr
+
+# Never ship data, run outputs, caches or checkpoints.
+prune data
+prune runs
+prune checkpoints
+prune wandb
+prune .github
+global-exclude *.py[cod] __pycache__ .DS_Store *.h5 *.hdf5 *.npz *.pt *.pth *.ckpt

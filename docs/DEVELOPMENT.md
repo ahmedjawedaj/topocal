@@ -38,3 +38,19 @@ topocal inspect-shard path/to/TopoBox-3D-HodgeHeat/protocol_B/train/shard_0000.h
 ```
 
 Tests use a synthetic release written at test time by `tests/topobox_fixture.py`.
+
+## Source distribution and wheel checks
+
+Passing `python -m build` and `twine check` does not prove the archive is usable, because both passed on an sdist that omitted `tests/conftest.py`. The `package` CI job and `scripts/check_distribution.py` inspect the archives directly:
+
+```bash
+python -m pip install build twine
+python -m build --outdir dist
+python -m twine check dist/*
+python scripts/check_distribution.py dist          # contents, forbidden paths, license metadata
+SRC="$(python scripts/check_distribution.py dist --extract /tmp/topocal-sdist)"
+python -m venv /tmp/sdist-env && /tmp/sdist-env/bin/python -m pip install "$SRC[dev]"
+cd "$SRC" && /tmp/sdist-env/bin/python -m pytest   # no editable install, no PYTHONPATH
+```
+
+The sdist carries the whole `tests/` tree and the public docs. It never carries data, run outputs, caches, checkpoints or the local-only guides, handoffs and plans. Only the synthetic tests exist, so real-data validation is not part of this job. The wheel is checked in an environment with only NumPy installed: `import topocal.datasets` and `topocal demo` must work without `h5py`.
