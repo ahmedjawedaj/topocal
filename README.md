@@ -72,10 +72,9 @@ Forks and contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.m
 [open issues](https://github.com/ahmedjawedaj/topocal/issues). Use
 [Discussions](https://github.com/ahmedjawedaj/topocal/discussions) for questions and design proposals.
 
-Open issues track known correctness, dataset-manifest, CI, and source-distribution
-defects. The current baseline
-passes 121 tests with 95% coverage on Python 3.11/3.12, while lint and type checks fail.
-Do not use this development snapshot for a production reliability decision.
+Open issues track the remaining hardening and real-data validation work. The TopoBox-3D
+loader has not been run on real shards yet. Do not use this development snapshot for a
+production reliability decision.
 
 ## Core API
 
