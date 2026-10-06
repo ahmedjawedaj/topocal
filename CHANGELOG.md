@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Ruff and strict mypy pass again, and CI no longer overrides the 90% coverage gate with 85%
+- the final OOD test guard now normalizes partition input, so the string `"ood_test"` is locked exactly like `ExperimentPartition.OOD_TEST`
+- `allow_final_test` unlocks the final test only when it is the boolean `True`
+- invalid partition values raise a clear `ValueError` at `SplitManifest.ids_for` and `TopoBoxDataset`
+
+### Changed
+
+- `SplitManifest.ids_for` and `TopoBoxDataset` accept an `ExperimentPartition` or its exact string value, and `ExperimentPartition.parse` is the single normalization point
+- `TopoBoxManifest.geometry_ids` and `split_fingerprint` take explicit keyword-only filters (`protocol`, `split`, `is_ood`)
+
 ## 0.1.0-dev3 - 2026-10-06
 
 ### Added

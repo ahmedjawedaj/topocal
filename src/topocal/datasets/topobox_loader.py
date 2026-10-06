@@ -252,6 +252,10 @@ class TopoBoxDataset:
     ``protocol_<P>/<split>/shard_<NNNN>.h5``. ``split_manifest.dataset_fingerprint`` must equal
     ``manifest.sha256`` so a split can never be applied to a different manifest than it was
     frozen against.
+
+    ``partition`` accepts an :class:`ExperimentPartition` or its exact string value. It is
+    normalized to the enum before the final-test guard runs, so ``"ood_test"`` is locked exactly
+    like ``ExperimentPartition.OOD_TEST``. No file is opened before that check.
     """
 
     def __init__(
@@ -259,12 +263,13 @@ class TopoBoxDataset:
         *,
         manifest: TopoBoxManifest,
         split_manifest: SplitManifest,
-        partition: ExperimentPartition,
+        partition: ExperimentPartition | str,
         geometry_root: str | Path,
         solution_root: str | Path | None = None,
         allow_final_test: bool = False,
         float_dtype: npt.DTypeLike | None = None,
     ) -> None:
+        partition = ExperimentPartition.parse(partition)
         ids = split_manifest.ids_for(partition, allow_final_test=allow_final_test)
         if split_manifest.dataset_fingerprint != manifest.sha256:
             raise ValueError(
