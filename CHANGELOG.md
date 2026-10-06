@@ -13,6 +13,9 @@
 - `load_calibration_bundle` rejects an invalid support artifact even when its hash matches the manifest
 - `TopoBoxManifest.from_csv` loads the real upstream header (no `seed` column). `TopoBoxGeometryRecord.seed` is `int | None`, `None` when the column is absent or the cell is blank, and a malformed supplied seed raises `ValueError`. Seeds are never defaulted to 0
 - short manifest rows raise `ValueError` instead of `AttributeError`
+- the source distribution now includes `tests/conftest.py`, `tests/topobox_fixture.py`, the whole test tree and the public docs via `MANIFEST.in`, and excludes data, runs, caches, checkpoints and local-only guides
+- license metadata uses an SPDX expression with `license-files`, so the build requires setuptools 77.0.3 or newer
+- `scripts/check_distribution.py` inspects the sdist and wheel, and the new `package` CI job installs the extracted sdist with its dev extra, runs its tests from outside the checkout, and smoke-tests the wheel in a NumPy-only environment
 
 ### Changed
 
