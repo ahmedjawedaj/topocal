@@ -11,6 +11,8 @@
 - support artifacts are validated on load and save: finite positive `regularization` and `temperature`, valid feature names and dimensions, finite state, and a symmetric positive semidefinite precision (NumPy-only, scale-aware `1e-8` tolerance)
 - a negative precision no longer clamps distance to zero and grants an outlier support 1.0, and a corrupted in-memory model now raises so the router falls back
 - `load_calibration_bundle` rejects an invalid support artifact even when its hash matches the manifest
+- `TopoBoxManifest.from_csv` loads the real upstream header (no `seed` column). `TopoBoxGeometryRecord.seed` is `int | None`, `None` when the column is absent or the cell is blank, and a malformed supplied seed raises `ValueError`. Seeds are never defaulted to 0
+- short manifest rows raise `ValueError` instead of `AttributeError`
 
 ### Changed
 

@@ -121,9 +121,8 @@ Experiment manifests record exact config, Git commit/dirty state, dependency and
 
 ## TopoBox-3D data loading
 
-**Experimental adapter:** real shards remain unverified, and the current manifest
-reader requires a `seed` column absent from the upstream release. Resolve the linked
-hardening issue before following this example. Data is hosted by
+**Experimental adapter:** the loader is tested only on a synthetic release, and real
+shards remain unverified until `topocal inspect-shard` has been run on them. Data is hosted by
 [the upstream TopoBox-3D project](https://huggingface.co/datasets/cppyyy/TopoBox-3D);
 keep downloads outside Git. `runs/splits.json` must be created under the
 [four-way experiment protocol](docs/EXPERIMENT_PROTOCOL.md); it is not a bundled file.
