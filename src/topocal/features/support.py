@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,66 @@ from topocal.types import FeatureVector
 
 Array = npt.NDArray[np.float64]
 _SUPPORT_ARTIFACT_VERSION = 1
+
+# Fitted-state tolerances. Both are relative to the matrix scale and sit about eight orders of
+# magnitude above float64 roundoff, so legitimate pseudoinverse output always passes while any
+# materially asymmetric or indefinite matrix does not.
+#
+# * asymmetry: max|P - P.T| must be at most _STATE_RTOL * max|P|. Accepted matrices are
+#   replaced by their exact symmetric part.
+# * negative curvature: the smallest eigenvalue must be at least -_STATE_RTOL * the largest.
+#   Accepted tiny negative eigenvalues are projected to zero, so the stored matrix is exactly
+#   positive semidefinite. Singular PSD matrices (from pseudoinverse truncation) are valid.
+#
+# An all-zero precision matrix is rejected: it is formally PSD but gives every query distance
+# zero and therefore maximum support, which is the failure this validation exists to prevent.
+_STATE_RTOL = 1e-8
+
+
+def _positive_finite(name: str, value: object) -> float:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite positive number, got {value!r}") from None
+    if not math.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{name} must be a finite positive number, got {value!r}")
+    return number
+
+
+def _validate_names(names: tuple[str, ...], size: int) -> None:
+    if not names:
+        raise ValueError("support model must have at least one feature name")
+    if not all(isinstance(name, str) and name.strip() for name in names):
+        raise ValueError("support model feature names must be non-blank strings")
+    if len(set(names)) != len(names):
+        raise ValueError("support model feature names must be unique")
+    if len(names) != size:
+        raise ValueError("invalid support artifact dimensions")
+
+
+def _validated_precision(precision: Array, mean: Array) -> Array:
+    """Return an exactly symmetric PSD precision matrix, or raise ``ValueError``."""
+
+    if mean.ndim != 1 or mean.size == 0 or precision.shape != (mean.size, mean.size):
+        raise ValueError("invalid support artifact dimensions")
+    if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(precision)):
+        raise ValueError("support artifact contains non-finite values")
+    scale = float(np.max(np.abs(precision)))
+    if scale == 0.0:
+        raise ValueError(
+            "precision matrix is all zeros, so every query would receive maximum support"
+        )
+    if float(np.max(np.abs(precision - precision.T))) > _STATE_RTOL * scale:
+        raise ValueError("precision matrix is not symmetric")
+    symmetric = 0.5 * (precision + precision.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    if float(eigenvalues[0]) < -_STATE_RTOL * float(eigenvalues[-1]) or eigenvalues[-1] <= 0.0:
+        raise ValueError("precision matrix is not positive semidefinite")
+    if eigenvalues[0] < 0.0:
+        clipped = np.clip(eigenvalues, 0.0, None)
+        symmetric = (eigenvectors * clipped) @ eigenvectors.T
+        symmetric = 0.5 * (symmetric + symmetric.T)
+    return np.asarray(symmetric, dtype=np.float64)
 
 
 @dataclass(slots=True)
@@ -26,15 +87,13 @@ class GaussianSupportModel:
 
     regularization: float = 1e-6
     temperature: float = 1.0
-    _mean: Array | None = None
-    _precision: Array | None = None
-    _names: tuple[str, ...] | None = None
+    _mean: Array | None = field(default=None, init=False, repr=False)
+    _precision: Array | None = field(default=None, init=False, repr=False)
+    _names: tuple[str, ...] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.regularization <= 0:
-            raise ValueError("regularization must be positive")
-        if self.temperature <= 0:
-            raise ValueError("temperature must be positive")
+        self.regularization = _positive_finite("regularization", self.regularization)
+        self.temperature = _positive_finite("temperature", self.temperature)
 
     def fit(self, features: list[FeatureVector]) -> GaussianSupportModel:
         if len(features) < 2:
@@ -47,8 +106,9 @@ class GaussianSupportModel:
         centered = x - mean
         cov = (centered.T @ centered) / max(len(features) - 1, 1)
         cov = cov + self.regularization * np.eye(cov.shape[0])
+        precision = _validated_precision(np.linalg.pinv(cov), mean)
         self._mean = mean
-        self._precision = np.linalg.pinv(cov)
+        self._precision = precision
         self._names = names
         return self
 
@@ -57,7 +117,13 @@ class GaussianSupportModel:
         assert self._mean is not None
         assert self._precision is not None
         delta = features.values - self._mean
-        return max(float(delta @ self._precision @ delta), 0.0)
+        distance = float(delta @ self._precision @ delta)
+        magnitude = float(np.abs(delta) @ np.abs(self._precision) @ np.abs(delta))
+        if math.isnan(distance) or distance < -_STATE_RTOL * magnitude:
+            # A valid PSD state cannot produce this. Raising lets the router fail closed instead
+            # of clamping a corrupted negative distance to maximum support.
+            raise ValueError("support model state is not positive semidefinite")
+        return max(distance, 0.0)
 
     def support_score(self, features: FeatureVector) -> float:
         d2 = self.squared_distance(features)
@@ -70,6 +136,8 @@ class GaussianSupportModel:
         assert self._mean is not None
         assert self._precision is not None
         assert self._names is not None
+        _validated_precision(self._precision, self._mean)
+        _validate_names(self._names, self._mean.size)
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         metadata = json.dumps(
@@ -94,24 +162,34 @@ class GaussianSupportModel:
         """Load and validate a versioned NPZ artifact."""
 
         with np.load(Path(path), allow_pickle=False) as artifact:
-            metadata = json.loads(str(artifact["metadata"].item()))
-            if metadata.get("artifact_version") != _SUPPORT_ARTIFACT_VERSION:
-                raise ValueError("unsupported support artifact version")
-            if metadata.get("model_type") != cls.__name__:
-                raise ValueError("support artifact model type mismatch")
-            model = cls(
-                regularization=float(metadata["regularization"]),
-                temperature=float(metadata["temperature"]),
-            )
-            mean = np.asarray(artifact["mean"], dtype=np.float64)
-            precision = np.asarray(artifact["precision"], dtype=np.float64)
-            names = tuple(str(name) for name in metadata["feature_names"])
-        if mean.ndim != 1 or precision.shape != (mean.size, mean.size) or len(names) != mean.size:
-            raise ValueError("invalid support artifact dimensions")
-        if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(precision)):
-            raise ValueError("support artifact contains non-finite values")
+            try:
+                metadata = json.loads(str(artifact["metadata"].item()))
+                raw_mean = artifact["mean"]
+                raw_precision = artifact["precision"]
+            except KeyError as exc:
+                raise ValueError(f"support artifact is missing {exc}") from None
+        if not isinstance(metadata, dict):
+            raise ValueError("support artifact metadata must be a JSON object")
+        if metadata.get("artifact_version") != _SUPPORT_ARTIFACT_VERSION:
+            raise ValueError("unsupported support artifact version")
+        if metadata.get("model_type") != cls.__name__:
+            raise ValueError("support artifact model type mismatch")
+        for key in ("regularization", "temperature", "feature_names"):
+            if key not in metadata:
+                raise ValueError(f"support artifact metadata is missing {key!r}")
+        raw_names = metadata["feature_names"]
+        if not isinstance(raw_names, list):
+            raise ValueError("support artifact feature_names must be a list")
+        names = tuple(raw_names)
+        model = cls(
+            regularization=metadata["regularization"],
+            temperature=metadata["temperature"],
+        )
+        mean = np.asarray(raw_mean, dtype=np.float64)
+        precision = np.asarray(raw_precision, dtype=np.float64)
+        _validate_names(names, mean.size)
+        model._precision = _validated_precision(precision, mean)
         model._mean = mean
-        model._precision = precision
         model._names = names
         return model
 

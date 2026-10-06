@@ -8,10 +8,15 @@
 - the final OOD test guard now normalizes partition input, so the string `"ood_test"` is locked exactly like `ExperimentPartition.OOD_TEST`
 - `allow_final_test` unlocks the final test only when it is the boolean `True`
 - invalid partition values raise a clear `ValueError` at `SplitManifest.ids_for` and `TopoBoxDataset`
+- support artifacts are validated on load and save: finite positive `regularization` and `temperature`, valid feature names and dimensions, finite state, and a symmetric positive semidefinite precision (NumPy-only, scale-aware `1e-8` tolerance)
+- a negative precision no longer clamps distance to zero and grants an outlier support 1.0, and a corrupted in-memory model now raises so the router falls back
+- `load_calibration_bundle` rejects an invalid support artifact even when its hash matches the manifest
 
 ### Changed
 
 - `SplitManifest.ids_for` and `TopoBoxDataset` accept an `ExperimentPartition` or its exact string value, and `ExperimentPartition.parse` is the single normalization point
+- breaking for invalid files only: support artifacts that are materially asymmetric, indefinite, all-zero or carry non-finite hyperparameters now raise `ValueError` on load. The artifact version is unchanged
+- `GaussianSupportModel` private fitted fields are `init=False`
 - `TopoBoxManifest.geometry_ids` and `split_fingerprint` take explicit keyword-only filters (`protocol`, `split`, `is_ood`)
 
 ## 0.1.0-dev3 - 2026-10-06

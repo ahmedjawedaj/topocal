@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from topocal.demo import build_demo_router
+from topocal.features.support import GaussianSupportModel
 from topocal.routing.router import TopoCalRouter
 from topocal.types import (
     Decision,
@@ -171,3 +172,47 @@ def test_invalid_fallback_solution_raises() -> None:
     instance.fallback = FixedFallback(np.nan)
     with pytest.raises(RuntimeError, match="fallback"):
         instance.solve(Problem("x", None))
+
+
+@dataclass
+class FarSurrogate:
+    """Emits features far from the support model mean, so distance is strictly positive."""
+
+    def predict(self, problem: Problem) -> PredictionBundle:
+        return PredictionBundle(np.array([1.0]), FeatureVector(np.array([500.0]), NAMES))
+
+
+def real_support() -> GaussianSupportModel:
+    vectors = [FeatureVector(np.array([x]), NAMES) for x in (-1.0, -0.5, 0.0, 0.5, 1.0)]
+    return GaussianSupportModel().fit(vectors)
+
+
+def test_router_falls_back_when_real_support_state_is_corrupted() -> None:
+    """Regression: a negative precision used to yield support 1.0 and accept the neural output."""
+
+    support = real_support()
+    support._precision = -np.eye(1)
+    instance = router()
+    instance.support_model = support
+    instance.surrogate = FarSurrogate()
+    result = instance.solve(Problem("corrupt", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.UNAVAILABLE
+
+
+def test_router_falls_back_for_unfitted_real_support_model() -> None:
+    instance = router()
+    instance.support_model = GaussianSupportModel()
+    result = instance.solve(Problem("unfitted", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.UNAVAILABLE
+
+
+def test_router_real_support_outside_support_leaves_risk_unknown() -> None:
+    instance = router()
+    instance.support_model = real_support()
+    instance.surrogate = FarSurrogate()
+    result = instance.solve(Problem("far", None))
+    assert result.decision == Decision.FALLBACK_SOLVER
+    assert result.support_status == SupportStatus.OUTSIDE_SUPPORT
+    assert result.risk is None
