@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -70,3 +71,257 @@ def test_support_rejects_schema_mismatch() -> None:
 def test_support_threshold_rejects_invalid_quantile() -> None:
     with pytest.raises(ValueError, match="lower_quantile"):
         support_threshold_from_calibration([0.2, 0.4], lower_quantile=1.2)
+
+
+# ---------------------------------------------------------------------------
+# Fitted-state and artifact validation (Task C)
+# ---------------------------------------------------------------------------
+
+
+def write_artifact(
+    path: Path,
+    *,
+    mean: object = (0.0,),
+    precision: object = ((1.0,),),
+    names: object = ("x",),
+    regularization: object = 1e-6,
+    temperature: object = 1.0,
+    **metadata_overrides: object,
+) -> Path:
+    metadata: dict[str, object] = {
+        "artifact_version": 1,
+        "model_type": "GaussianSupportModel",
+        "regularization": regularization,
+        "temperature": temperature,
+        "feature_names": names,
+    }
+    metadata.update(metadata_overrides)
+    np.savez_compressed(
+        path,
+        mean=np.asarray(mean, dtype=np.float64),
+        precision=np.asarray(precision, dtype=np.float64),
+        metadata=json.dumps(metadata),
+    )
+    return path
+
+
+def diag_artifact(path: Path, *eigenvalues: float) -> Path:
+    n = len(eigenvalues)
+    return write_artifact(
+        path,
+        mean=np.zeros(n),
+        precision=np.diag(eigenvalues),
+        names=tuple(f"f{i}" for i in range(n)),
+    )
+
+
+def test_valid_artifact_helper_loads(tmp_path: Path) -> None:
+    model = GaussianSupportModel.load(write_artifact(tmp_path / "ok.npz"))
+    assert model.support_score(FeatureVector(np.array([0.0]), ("x",))) == pytest.approx(1.0)
+
+
+def test_negative_precision_artifact_is_rejected(tmp_path: Path) -> None:
+    """Regression: a negative precision used to clamp distance to 0 and give support 1.0."""
+
+    path = write_artifact(tmp_path / "negative.npz", precision=((-1.0,),))
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        GaussianSupportModel.load(path)
+
+
+@pytest.mark.parametrize(
+    "precision",
+    [
+        ((1.0, 0.0), (0.0, -1.0)),
+        ((1.0, 2.0), (2.0, 1.0)),
+    ],
+)
+def test_indefinite_precision_artifact_is_rejected(
+    tmp_path: Path, precision: tuple[tuple[float, float], ...]
+) -> None:
+    path = write_artifact(
+        tmp_path / "indefinite.npz", mean=(0.0, 0.0), precision=precision, names=("a", "b")
+    )
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        GaussianSupportModel.load(path)
+
+
+def test_materially_asymmetric_precision_artifact_is_rejected(tmp_path: Path) -> None:
+    path = write_artifact(
+        tmp_path / "asym.npz",
+        mean=(0.0, 0.0),
+        precision=((2.0, 0.5), (0.0, 2.0)),
+        names=("a", "b"),
+    )
+    with pytest.raises(ValueError, match="symmetric"):
+        GaussianSupportModel.load(path)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_non_finite_state_is_rejected(tmp_path: Path, bad: float) -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        GaussianSupportModel.load(write_artifact(tmp_path / "mean.npz", mean=(bad,)))
+    with pytest.raises(ValueError, match="non-finite"):
+        GaussianSupportModel.load(write_artifact(tmp_path / "prec.npz", precision=((bad,),)))
+
+
+def test_all_zero_precision_is_rejected(tmp_path: Path) -> None:
+    path = write_artifact(tmp_path / "zero.npz", precision=((0.0,),))
+    with pytest.raises(ValueError, match="all zeros"):
+        GaussianSupportModel.load(path)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf, 0.0, -1.0, "abc", None])
+@pytest.mark.parametrize("field_name", ["regularization", "temperature"])
+def test_invalid_hyperparameters_rejected_by_constructor(field_name: str, bad: object) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        GaussianSupportModel(**{field_name: bad})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0, "abc", None])
+@pytest.mark.parametrize("field_name", ["regularization", "temperature"])
+def test_invalid_hyperparameters_rejected_on_load(
+    tmp_path: Path, field_name: str, bad: object
+) -> None:
+    path = write_artifact(tmp_path / "hyper.npz", **{field_name: bad})
+    with pytest.raises(ValueError, match=field_name):
+        GaussianSupportModel.load(path)
+
+
+@pytest.mark.parametrize(
+    ("names", "mean", "precision", "match"),
+    [
+        ([], (0.0,), ((1.0,),), "at least one"),
+        (["x", "x"], (0.0, 0.0), ((1.0, 0.0), (0.0, 1.0)), "unique"),
+        (["x", "  "], (0.0, 0.0), ((1.0, 0.0), (0.0, 1.0)), "non-blank"),
+        (["x", ""], (0.0, 0.0), ((1.0, 0.0), (0.0, 1.0)), "non-blank"),
+        (["x", 3], (0.0, 0.0), ((1.0, 0.0), (0.0, 1.0)), "non-blank"),
+        (["x"], (0.0, 0.0), ((1.0, 0.0), (0.0, 1.0)), "dimensions"),
+        (["x", "y"], (0.0,), ((1.0,),), "dimensions"),
+        (["x"], (0.0,), ((1.0, 0.0), (0.0, 1.0)), "dimensions"),
+    ],
+)
+def test_invalid_schema_is_rejected(
+    tmp_path: Path, names: list[object], mean: object, precision: object, match: str
+) -> None:
+    path = write_artifact(tmp_path / "schema.npz", mean=mean, precision=precision, names=names)
+    with pytest.raises(ValueError, match=match):
+        GaussianSupportModel.load(path)
+
+
+def test_feature_names_must_be_a_list(tmp_path: Path) -> None:
+    path = write_artifact(tmp_path / "names.npz", names="x")
+    with pytest.raises(ValueError, match="list"):
+        GaussianSupportModel.load(path)
+
+
+def test_missing_keys_and_bad_versions_raise_value_error(tmp_path: Path) -> None:
+    np.savez_compressed(tmp_path / "nometa.npz", mean=np.zeros(1), precision=np.eye(1))
+    with pytest.raises(ValueError, match="missing"):
+        GaussianSupportModel.load(tmp_path / "nometa.npz")
+    with pytest.raises(ValueError, match="version"):
+        GaussianSupportModel.load(write_artifact(tmp_path / "v.npz", artifact_version=2))
+    with pytest.raises(ValueError, match="model type"):
+        GaussianSupportModel.load(write_artifact(tmp_path / "t.npz", model_type="Other"))
+    path = write_artifact(tmp_path / "k.npz")
+    with np.load(path) as artifact:
+        metadata = json.loads(str(artifact["metadata"].item()))
+    del metadata["temperature"]
+    np.savez_compressed(
+        tmp_path / "k2.npz", mean=np.zeros(1), precision=np.eye(1), metadata=json.dumps(metadata)
+    )
+    with pytest.raises(ValueError, match="temperature"):
+        GaussianSupportModel.load(tmp_path / "k2.npz")
+
+
+def test_trained_model_roundtrip_is_exact(tmp_path: Path) -> None:
+    model = fitted_model()
+    model.save(tmp_path / "m.npz")
+    restored = GaussianSupportModel.load(tmp_path / "m.npz")
+    assert restored.regularization == model.regularization
+    assert restored.temperature == model.temperature
+    for query in (fv(0, 0), fv(0.3, -0.7), fv(5, 5)):
+        assert restored.support_score(query) == pytest.approx(model.support_score(query), abs=0)
+
+
+def test_legitimate_singular_psd_is_preserved(tmp_path: Path) -> None:
+    """A rank-deficient precision is valid. Its null direction is simply unconstrained."""
+
+    path = write_artifact(
+        tmp_path / "singular.npz",
+        mean=(0.0, 0.0),
+        precision=((1.0, 0.0), (0.0, 0.0)),
+        names=("a", "b"),
+    )
+    model = GaussianSupportModel.load(path)
+    free = model.support_score(fv(0.0, 1000.0))
+    constrained = model.support_score(fv(3.0, 0.0))
+    assert free == pytest.approx(1.0)
+    assert constrained == pytest.approx(np.exp(-4.5))
+
+
+def test_fit_on_degenerate_features_yields_valid_support() -> None:
+    constant_second_feature = [fv(float(i), 1.0) for i in range(6)]
+    model = GaussianSupportModel(regularization=1e-12).fit(constant_second_feature)
+    assert 0.0 <= model.support_score(fv(2.5, 1.0)) <= 1.0
+    assert model.support_score(fv(2.5, 1.0)) > model.support_score(fv(100.0, 1.0))
+
+
+@pytest.mark.parametrize(
+    ("eigenvalues", "accepted"),
+    [
+        ((1.0, -5e-9), True),
+        ((1.0, -2e-8), False),
+        ((1e6, -5e-3), True),
+        ((1e6, -2e-2), False),
+        ((1e-6, -5e-15), True),
+        ((1e-6, -2e-14), False),
+    ],
+)
+def test_psd_tolerance_is_scale_aware(
+    tmp_path: Path, eigenvalues: tuple[float, float], accepted: bool
+) -> None:
+    path = diag_artifact(tmp_path / "tol.npz", *eigenvalues)
+    if accepted:
+        model = GaussianSupportModel.load(path)
+        assert model._precision is not None
+        assert np.linalg.eigvalsh(model._precision)[0] >= 0.0
+    else:
+        with pytest.raises(ValueError, match="positive semidefinite"):
+            GaussianSupportModel.load(path)
+
+
+@pytest.mark.parametrize(("off", "accepted"), [(5e-9, True), (2e-8, False)])
+def test_asymmetry_tolerance_is_scale_aware(tmp_path: Path, off: float, accepted: bool) -> None:
+    path = write_artifact(
+        tmp_path / "asym.npz",
+        mean=(0.0, 0.0),
+        precision=((1.0, 0.1 + off), (0.1, 1.0)),
+        names=("a", "b"),
+    )
+    if accepted:
+        model = GaussianSupportModel.load(path)
+        assert model._precision is not None
+        assert np.array_equal(model._precision, model._precision.T)
+    else:
+        with pytest.raises(ValueError, match="symmetric"):
+            GaussianSupportModel.load(path)
+
+
+def test_runtime_guard_rejects_corrupted_in_memory_state() -> None:
+    model = fitted_model()
+    model._precision = -np.eye(2)
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        model.support_score(fv(1000.0, 1000.0))
+
+
+def test_save_refuses_corrupted_in_memory_state(tmp_path: Path) -> None:
+    model = fitted_model()
+    model._precision = -np.eye(2)
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        model.save(tmp_path / "bad.npz")
+    assert not (tmp_path / "bad.npz").exists()
+
+
+def test_private_state_is_not_constructor_argument() -> None:
+    with pytest.raises(TypeError):
+        GaussianSupportModel(_precision=-np.eye(1))  # type: ignore[call-arg]
