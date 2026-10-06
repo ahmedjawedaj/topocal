@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import csv
 import hashlib
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
 
 _VALID_PROTOCOLS = frozenset({"A", "B", "C", "D"})
 _VALID_SPLITS = frozenset({"train", "validation", "test_iid", "test_ood"})
@@ -37,7 +37,7 @@ class TopoBoxManifest:
     sha256: str
 
     @classmethod
-    def from_csv(cls, path: str | Path) -> "TopoBoxManifest":
+    def from_csv(cls, path: str | Path) -> TopoBoxManifest:
         source = Path(path)
         raw = source.read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
@@ -81,13 +81,28 @@ class TopoBoxManifest:
             and (is_ood is None or record.is_ood is is_ood)
         )
 
-    def geometry_ids(self, **filters: object) -> tuple[str, ...]:
-        return tuple(record.geometry_id for record in self.select(**filters))
+    def geometry_ids(
+        self,
+        *,
+        protocol: str | None = None,
+        split: str | None = None,
+        is_ood: bool | None = None,
+    ) -> tuple[str, ...]:
+        """Geometry IDs matching the filters, in manifest order."""
 
-    def split_fingerprint(self, **filters: object) -> str:
+        selected = self.select(protocol=protocol, split=split, is_ood=is_ood)
+        return tuple(record.geometry_id for record in selected)
+
+    def split_fingerprint(
+        self,
+        *,
+        protocol: str | None = None,
+        split: str | None = None,
+        is_ood: bool | None = None,
+    ) -> str:
         """Stable hash of selected geometry IDs, independent of manifest row order."""
 
-        ids = sorted(self.geometry_ids(**filters))
+        ids = sorted(self.geometry_ids(protocol=protocol, split=split, is_ood=is_ood))
         payload = "\n".join(ids).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 

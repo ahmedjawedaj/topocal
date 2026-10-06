@@ -42,7 +42,7 @@ class EmpiricalRiskCalibrator:
         self,
         features: list[FeatureVector],
         failures: npt.ArrayLike,
-    ) -> "EmpiricalRiskCalibrator":
+    ) -> EmpiricalRiskCalibrator:
         if not features:
             raise ValueError("calibration features cannot be empty")
         y = np.asarray(failures, dtype=np.float64)
@@ -112,7 +112,7 @@ class EmpiricalRiskCalibrator:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "EmpiricalRiskCalibrator":
+    def load(cls, path: str | Path) -> EmpiricalRiskCalibrator:
         """Load and validate a versioned NPZ artifact."""
 
         with np.load(Path(path), allow_pickle=False) as artifact:

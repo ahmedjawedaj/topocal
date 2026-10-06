@@ -49,7 +49,7 @@ class ExperimentManifest:
         feature_schema: tuple[str, ...] = (),
         solver: dict[str, str] | None = None,
         dataset_provenance: dict[str, Any] | None = None,
-    ) -> "ExperimentManifest":
+    ) -> ExperimentManifest:
         config_bytes = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
         artifacts = {
             name: file_sha256(path) for name, path in (artifact_paths or {}).items()

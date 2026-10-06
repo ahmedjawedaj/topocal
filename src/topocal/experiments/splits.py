@@ -94,7 +94,7 @@ class SplitManifest:
         )
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "SplitManifest":
+    def from_json(cls, path: str | Path) -> SplitManifest:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             dataset_fingerprint=str(data["dataset_fingerprint"]),
