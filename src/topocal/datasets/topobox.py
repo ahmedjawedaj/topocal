@@ -20,6 +20,13 @@ _VALID_SPLITS = frozenset({"train", "validation", "test_iid", "test_ood"})
 
 @dataclass(frozen=True, slots=True)
 class TopoBoxGeometryRecord:
+    """One manifest row.
+
+    ``seed`` is ``None`` when the manifest has no ``seed`` column or the cell is blank. The
+    upstream release header has no seed, so absence is represented honestly. A seed is never
+    defaulted to 0 or otherwise invented.
+    """
+
     geometry_id: str
     protocol: str
     split: str
@@ -27,7 +34,7 @@ class TopoBoxGeometryRecord:
     beta1: int
     beta2: int
     geometry_family: str
-    seed: int
+    seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +51,8 @@ class TopoBoxManifest:
         rows: list[TopoBoxGeometryRecord] = []
         with source.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
+            # ``seed`` is optional: the upstream release does not publish it. Every identity,
+            # split and topology column stays mandatory.
             required = {
                 "geometry_id",
                 "protocol",
@@ -52,7 +61,6 @@ class TopoBoxManifest:
                 "beta1",
                 "beta2",
                 "geometry_family",
-                "seed",
             }
             missing = required - set(reader.fieldnames or ())
             if missing:
@@ -113,17 +121,41 @@ class TopoBoxManifest:
         return len(self.records)
 
 
+def _cell(row: dict[str, str], column: str) -> str:
+    value = row.get(column)
+    if value is None:
+        raise ValueError(f"TopoBox manifest row is missing a value for column {column!r}")
+    return value
+
+
+def _parse_int(row: dict[str, str], column: str) -> int:
+    value = _cell(row, column)
+    try:
+        return int(value.strip())
+    except ValueError:
+        raise ValueError(f"invalid integer in column {column!r}: {value!r}") from None
+
+
+def _parse_seed(row: dict[str, str]) -> int | None:
+    """Parse the optional seed. Absent or blank means unknown, anything else must be an int."""
+
+    value = row.get("seed")
+    if value is None or not value.strip():
+        return None
+    return _parse_int(row, "seed")
+
+
 def _parse_record(row: dict[str, str]) -> TopoBoxGeometryRecord:
-    protocol = row["protocol"].strip().upper()
+    protocol = _cell(row, "protocol").strip().upper()
     if protocol not in _VALID_PROTOCOLS:
         raise ValueError(f"invalid TopoBox protocol: {protocol}")
-    split = _normalize_split(row["split"])
-    is_ood = _parse_bool(row["is_ood"])
-    beta1 = int(row["beta1"])
-    beta2 = int(row["beta2"])
+    split = _normalize_split(_cell(row, "split"))
+    is_ood = _parse_bool(_cell(row, "is_ood"))
+    beta1 = _parse_int(row, "beta1")
+    beta2 = _parse_int(row, "beta2")
     if beta1 < 0 or beta2 < 0:
         raise ValueError("Betti numbers must be non-negative")
-    geometry_id = row["geometry_id"].strip()
+    geometry_id = _cell(row, "geometry_id").strip()
     if not geometry_id:
         raise ValueError("geometry_id cannot be empty")
     return TopoBoxGeometryRecord(
@@ -133,8 +165,8 @@ def _parse_record(row: dict[str, str]) -> TopoBoxGeometryRecord:
         is_ood=is_ood,
         beta1=beta1,
         beta2=beta2,
-        geometry_family=row["geometry_family"].strip(),
-        seed=int(row["seed"]),
+        geometry_family=_cell(row, "geometry_family").strip(),
+        seed=_parse_seed(row),
     )
 
 
