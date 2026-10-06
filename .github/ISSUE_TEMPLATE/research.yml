@@ -1,0 +1,20 @@
+name: Research result or discrepancy
+description: Report a reproducible experimental finding, baseline discrepancy, or negative result
+title: "[Research] "
+body:
+  - type: textarea
+    id: claim
+    attributes:
+      label: Observation
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Dataset, split, config, seed, and metrics
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Reproduction artifacts

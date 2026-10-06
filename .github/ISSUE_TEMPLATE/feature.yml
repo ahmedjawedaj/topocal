@@ -1,0 +1,21 @@
+name: Feature or documentation request
+description: Propose a focused improvement
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: research
+    attributes:
+      label: Alternatives and research impact
+      description: Include simple baselines and split/provenance implications when relevant.

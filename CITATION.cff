@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use TopoCal in research, please cite the repository and the associated paper once available."
+title: "TopoCal: Risk Calibration for Neural PDE Operators Under Topology Shift"
+type: software
+authors:
+  - name: "TopoCal Contributors"
+version: 0.1.0
+license: Apache-2.0
+repository-code: "https://github.com/ahmedjawedaj/topocal"
+url: "https://github.com/ahmedjawedaj/topocal"

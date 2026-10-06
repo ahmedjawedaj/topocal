@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and design proposals
+    url: https://github.com/ahmedjawedaj/topocal/discussions
+    about: Discuss usage, integrations, and substantial design proposals.
+  - name: Private security report
+    url: https://github.com/ahmedjawedaj/topocal/security/advisories/new
+    about: Report a software vulnerability privately.

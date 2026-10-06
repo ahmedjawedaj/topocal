@@ -1,0 +1,22 @@
+name: Bug report
+description: Reproducible software defect
+title: "[Bug] "
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+    validations:
+      required: true
